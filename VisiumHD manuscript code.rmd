@@ -48,29 +48,29 @@ library(openai)
 #import data
 ```{r}
 ##Naive
-img = Read10X_Image("/home/4479283/HDvisium/Raw_data/Naive/spatial", image.name = "tissue_hires_image.png")
-Naive = Load10X_Spatial("/home/4479283/HDvisium/Raw_data/Naive", image = img)
+img = Read10X_Image("/Raw_data/Naive/spatial", image.name = "tissue_hires_image.png")
+Naive = Load10X_Spatial("/Raw_data/Naive", image = img)
 Naive@images$slice1@scale.factors$lowres = Naive@images$slice1@scale.factors$hires
 
 
 
 ##PMN
-img = Read10X_Image("/home/4479283/HDvisium/Raw_data/PMN/spatial", image.name = "tissue_hires_image.png")
-PMN = Load10X_Spatial("/home/4479283/HDvisium/Raw_data/PMN", image = img)
+img = Read10X_Image("/Raw_data/PMN/spatial", image.name = "tissue_hires_image.png")
+PMN = Load10X_Spatial("/Raw_data/PMN", image = img)
 PMN@images$slice1@scale.factors$lowres = PMN@images$slice1@scale.factors$hires
 
 
 
 #MacroMet
-img = Read10X_Image("/home/4479283/HDvisium/Raw_data/MacroMet/spatial", image.name = "tissue_hires_image.png")
-MacroMet = Load10X_Spatial("/home/4479283/HDvisium/Raw_data/MacroMet", image = img)
+img = Read10X_Image("/Raw_data/MacroMet/spatial", image.name = "tissue_hires_image.png")
+MacroMet = Load10X_Spatial("/Raw_data/MacroMet", image = img)
 MacroMet@images$slice1@scale.factors$lowres = MacroMet@images$slice1@scale.factors$hires
 ```
 
 #clean up data
 ```{r}
 #Naive
-M19_bone_only<-read.csv("/home/4479283/HDvisium/Raw_data/Naive/M19_Naive_bone.csv", header = T)
+M19_bone_only<-read.csv("/Raw_data/Naive/M19_Naive_bone.csv", header = T)
 Naive<- subset(Naive, cells = M19_bone_only$Barcode)
 
 # Filter cells based on UMI counts
@@ -88,7 +88,7 @@ print(p1)
 
 
 #PMN
-M26_bone_only<-read.csv("/home/4479283/HDvisium/Raw_data/PMN/M26_PMN_bone.csv", header = T)
+M26_bone_only<-read.csv("/Raw_data/PMN/M26_PMN_bone.csv", header = T)
 PMN<- subset(PMN, cells = M26_bone_only$Barcode)
 
 # Filter cells based on UMI counts
@@ -106,7 +106,7 @@ print(p1)
 
 
 #MacroMet
-M2_bone_only<-read.csv("/home/4479283/HDvisium/Raw_data/MacroMet/M2_MacroMet_bone.csv", header = T)
+M2_bone_only<-read.csv("/Raw_data/MacroMet/M2_MacroMet_bone.csv", header = T)
 MacroMet<- subset(MacroMet, cells = M2_bone_only$Barcode)
 
 # Filter cells based on UMI counts
@@ -225,7 +225,7 @@ write.csv(markers, "merged_obj_no_tumor_SCT_snn_res.0.4_markers.csv")
 
 saveRDS(merged_obj, "merged_obj_clustered_named_without_tumor.rds")
 
-merged_obj<-readRDS("~/Desktop/HD visium experiment/RDS files/lastest/Merged_sctransformed_final.rds")
+merged_obj<-readRDS("/RDS files/lastest/Merged_sctransformed_final.rds")
 
 Idents(merged_obj)<-merged_obj$GPT.0.8
 DimPlot(merged_obj, label = T)
@@ -657,7 +657,7 @@ Idents(MacroMet)<-MacroMet$cluster_plus_sub
 MacroMet<-RenameIdents(MacroMet, `_ DistalTumor` = "Distal Tumor", `_ Tumor` = "Tumor", `_ ProximalTumor1` = "Proximal Tumor 1", `_ ProximalTumor2` = "Proximal Tumor 2")
 
 saveRDS(MacroMet, "MacroMet_named_subclustered_tumor.rds")
-MacroMet<-readRDS("~/Desktop/HD visium experiment/RDS files/lastest/MacroMet_named_subclustered_tumor.rds")
+MacroMet<-readRDS("/RDS files/lastest/MacroMet_named_subclustered_tumor.rds")
 
 
 my_colors <- c(
@@ -682,7 +682,7 @@ my_colors <- c(
   "NA" = "darkGrey"
 )
 
-MacroMet<-readRDS("~/Desktop/HD visium experiment/RDS files/lastest/MacroMet_named_subclustered_tumor.rds")
+MacroMet<-readRDS("/RDS files/lastest/MacroMet_named_subclustered_tumor.rds")
 
 ```
 
@@ -708,7 +708,7 @@ MacroMet <- FindClusters(MacroMet, cluster.name = "niches", resolution = 0.08)
 SpatialDimPlot(MacroMet, pt.size.factor = 5)
 
 saveRDS(MacroMet, "MacroMet_Niche.rds")
-MacroMet<-readRDS("~/Desktop/HD visium experiment/MacroMet_Niche.rds")
+MacroMet<-readRDS("/MacroMet_Niche.rds")
 
 MacroMet<-UpdateSeuratObject(MacroMet)
 
@@ -885,7 +885,7 @@ print(p1)
 
 #Figure 3: Distance Analysis & Ridgeplots
 ```{r}
-scalefactors <- jsonlite::fromJSON("~/Desktop/HD visium experiment/Raw data/M2_macrometastatic/square_008um/spatial/scalefactors_json.json")
+scalefactors <- jsonlite::fromJSON("/Raw data/M2_macrometastatic/square_008um/spatial/scalefactors_json.json")
 scale_factor <- 8 / scalefactors$spot_diameter_fullres
 
 
@@ -1347,8 +1347,8 @@ cellchat_Proximal_cropped_obj <- netAnalysis_computeCentrality(cellchat_Proximal
 ###################################################################################
 
 
-Proximal<-readRDS("~/Desktop/HD visium experiment/newCellChatProximal.rds")
-Distal<-readRDS("~/Desktop/HD visium experiment/newCellChatDistal.rds")
+Proximal<-readRDS("/newCellChatProximal.rds")
+Distal<-readRDS("/newCellChatDistal.rds")
 
 
 pathways.PERIOSTIN <- c("PERIOSTIN") 
@@ -1637,13 +1637,13 @@ DimPlot(Bcells, group.by = "GPTnamed", label = T, raster = F, split.by = "sample
 
 saveRDS(Bcells, "Bcells_subclustered_from_merged_obj_without_tumor.rds")
 
-Bcells<-readRDS("~/Desktop/HD visium experiment/RDS files/for pseudotime/Bcells_subclustered_from_merged_without_tumor.rds")
+Bcells<-readRDS("/RDS files/for pseudotime/Bcells_subclustered_from_merged_without_tumor.rds")
 ```
 
 
 #Figure 6: umap & barchart
 ```{r}
-Bcells<-readRDS("~/Desktop/HD visium experiment/RDS files/lastest/Bcells_subsetted_final.rds")
+Bcells<-readRDS("/RDS files/lastest/Bcells_subsetted_final.rds")
 Bcells = UpdateSeuratObject(Bcells)
 
 Idents(Bcells)<-Bcells$GPTnamed
@@ -1760,9 +1760,9 @@ print(p1)
 
 #Figure 6: CellChat chord plots - cellchat code was performed on subsetted on naive, PMN, and metastatic samples seperately as in Figure 4: regional cellchat
 ```{r}
-MacroMet<-readRDS("~/Desktop/HD visium experiment/RDS files/lastest/cellchat_MacroMet.rds")
-PMN<-readRDS("~/Desktop/HD visium experiment/RDS files/lastest/cellchat_PMN.rds")
-Naive<-readRDS("~/Desktop/HD visium experiment/RDS files/lastest/cellchat_naive.rds")
+MacroMet<-readRDS("/RDS files/lastest/cellchat_MacroMet.rds")
+PMN<-readRDS("/RDS files/lastest/cellchat_PMN.rds")
+Naive<-readRDS("/RDS files/lastest/cellchat_naive.rds")
 
 pathways.CXCL <- c("CXCL") 
 
@@ -2130,7 +2130,7 @@ print(p4)
 ```
 #Supp 7: B/plasma cell umaps & heatmap
 ```{r}
-Bcells<-readRDS("~/Desktop/HD visium experiment/RDS files/lastest/Bcells_subsetted_final.rds")
+Bcells<-readRDS("/RDS files/lastest/Bcells_subsetted_final.rds")
 
 my_colors <- c(
   "Pre-B cell"       = "#7FFFD4",
