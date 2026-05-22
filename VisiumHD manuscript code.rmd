@@ -1,0 +1,2195 @@
+---
+title: "Visium HD manuscript"
+output: html_document
+date: "2026-05-01"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Load Packages
+```{r}
+library(Seurat)
+library(ggplot2)
+library(patchwork)
+library(dplyr)
+library(arrow)
+library(SeuratWrappers)
+library(Banksy)
+library(spacexr)
+library(Matrix)
+library(ggpubr)
+library(gridExtra)
+library(reshape2)
+library(nichenetr)
+library(ComplexHeatmap)
+library(tidyr)
+library(rlang)
+library(RColorBrewer)
+library(ggforce)
+library(CellChat)
+library(NMF)
+library(circlize)
+library(ComplexHeatmap)
+library(BiocNeighbors)
+library(ggalluvial)
+library(bsicons)
+library(EnhancedVolcano)
+library(monocle3)
+library(GPTCelltype)
+library(openai)
+
+
+
+```
+
+
+#import data
+```{r}
+##Naive
+img = Read10X_Image("/home/4479283/HDvisium/Raw_data/Naive/spatial", image.name = "tissue_hires_image.png")
+Naive = Load10X_Spatial("/home/4479283/HDvisium/Raw_data/Naive", image = img)
+Naive@images$slice1@scale.factors$lowres = Naive@images$slice1@scale.factors$hires
+
+
+
+##PMN
+img = Read10X_Image("/home/4479283/HDvisium/Raw_data/PMN/spatial", image.name = "tissue_hires_image.png")
+PMN = Load10X_Spatial("/home/4479283/HDvisium/Raw_data/PMN", image = img)
+PMN@images$slice1@scale.factors$lowres = PMN@images$slice1@scale.factors$hires
+
+
+
+#MacroMet
+img = Read10X_Image("/home/4479283/HDvisium/Raw_data/MacroMet/spatial", image.name = "tissue_hires_image.png")
+MacroMet = Load10X_Spatial("/home/4479283/HDvisium/Raw_data/MacroMet", image = img)
+MacroMet@images$slice1@scale.factors$lowres = MacroMet@images$slice1@scale.factors$hires
+```
+
+#clean up data
+```{r}
+#Naive
+M19_bone_only<-read.csv("/home/4479283/HDvisium/Raw_data/Naive/M19_Naive_bone.csv", header = T)
+Naive<- subset(Naive, cells = M19_bone_only$Barcode)
+
+# Filter cells based on UMI counts
+Naive <- subset(Naive, nCount_Spatial > 20)
+Naive[["percent.mt"]] <- PercentageFeatureSet(Naive, pattern = "^mt-")
+Naive <- subset(Naive, subset = percent.mt < 10)
+
+filtered.count.plot<-SpatialFeaturePlot(Naive, features = "nCount_Spatial", pt.size = 3) + theme(axis.text = element_text(size = 4)) + NoLegend()
+filtered.vln.plot<-VlnPlot(Naive, features = "nCount_Spatial", pt.size = 0) + theme(axis.text = element_text(size = 4)) + NoLegend()
+filtered.mt.plot<-VlnPlot(Naive, features = "percent.mt", pt.size = 0) + theme(axis.text = element_text(size = 4)) + NoLegend()
+
+p1<-filtered.count.plot + filtered.vln.plot + filtered.mt.plot
+pdf("Naive_QC_plots.pdf", height = 10, width = 20)
+print(p1)
+
+
+#PMN
+M26_bone_only<-read.csv("/home/4479283/HDvisium/Raw_data/PMN/M26_PMN_bone.csv", header = T)
+PMN<- subset(PMN, cells = M26_bone_only$Barcode)
+
+# Filter cells based on UMI counts
+PMN <- subset(PMN, nCount_Spatial > 20)
+PMN[["percent.mt"]] <- PercentageFeatureSet(PMN, pattern = "^mt-")
+PMN <- subset(PMN, subset = percent.mt < 10)
+
+filtered.count.plot<-SpatialFeaturePlot(PMN, features = "nCount_Spatial", pt.size = 3) + theme(axis.text = element_text(size = 4)) + NoLegend()
+filtered.vln.plot<-VlnPlot(PMN, features = "nCount_Spatial", pt.size = 0) + theme(axis.text = element_text(size = 4)) + NoLegend()
+filtered.mt.plot<-VlnPlot(PMN, features = "percent.mt", pt.size = 0) + theme(axis.text = element_text(size = 4)) + NoLegend()
+
+p1<-filtered.count.plot + filtered.vln.plot + filtered.mt.plot
+pdf("PMN_QC_plots.pdf", height = 10, width = 20)
+print(p1)
+
+
+#MacroMet
+M2_bone_only<-read.csv("/home/4479283/HDvisium/Raw_data/MacroMet/M2_MacroMet_bone.csv", header = T)
+MacroMet<- subset(MacroMet, cells = M2_bone_only$Barcode)
+
+# Filter cells based on UMI counts
+MacroMet <- subset(MacroMet, nCount_Spatial > 20)
+MacroMet[["percent.mt"]] <- PercentageFeatureSet(MacroMet, pattern = "^mt-")
+MacroMet <- subset(MacroMet, subset = percent.mt < 10)
+
+filtered.count.plot<-SpatialFeaturePlot(MacroMet, features = "nCount_Spatial", pt.size = 3) + theme(axis.text = element_text(size = 4)) + NoLegend()
+filtered.vln.plot<-VlnPlot(MacroMet, features = "nCount_Spatial", pt.size = 0) + theme(axis.text = element_text(size = 4), pt.size = 2) + NoLegend()
+filtered.mt.plot<-VlnPlot(MacroMet, features = "percent.mt", pt.size = 0) + theme(axis.text = element_text(size = 4)) + NoLegend()
+
+p1<-filtered.count.plot + filtered.vln.plot + filtered.mt.plot
+pdf("MacroMet_QC_plots.pdf", height = 10, width = 20)
+print(p1)
+```
+
+
+#Merge, cluster, and annotate with GPTcelltype
+```{r}
+Naive$sample <- "Naive"
+PMN$sample <- "PMN"
+MacroMet$sample <- "MacroMet"
+
+#create merged_obj object & SCTransform
+merged_obj <- merge(Naive, y = list(PMN, MacroMet), add.cell.ids = c("Naive", "PMN", "MacroMet"), project = "merged_obj_HD")
+DefaultAssay(merged_obj)<-"Spatial"
+merged_obj[["Spatial"]] <- JoinLayers(merged_obj[["Spatial"]])
+merged_obj <- SCTransform(merged_obj, assay = "Spatial", verbose = FALSE)
+
+
+#cluster
+merged_obj <- RunPCA(merged_obj)
+ElbowPlot(merged_obj, ndims = 50, reduction = "pca")
+
+merged_obj <- FindNeighbors(merged_obj, dims = 1:20)
+merged_obj <- FindClusters(merged_obj, resolution = c(0.1, 0.2, 0.4, 0.8, 1.2))
+sapply(c(0.1, 0.2, 0.4, 0.8, 1.2), function(x) length(unique(merged_obj@meta.data[[paste0("SCT_snn_res.", x)]])))
+merged_obj <- RunUMAP(merged_obj, dims = 1:20)
+
+
+#GPT celltype
+
+# Load packages
+library(GPTCelltype)
+library(openai)
+
+#define markers used in GPTcelltype
+markers<-FindAllMarkers(merged_obj, group.by = "SCT_snn_res.0.8")
+# Keep only top 10 marker genes per cluster (adjust n for your dataset)
+markers_top <- markers %>%
+  group_by(cluster) %>%
+  slice_max(avg_log2FC, n = 10) %>%
+  ungroup()
+
+# Split into a list by cluster
+marker_list <- split(markers_top$gene, markers_top$cluster)
+
+annotate_cluster <- function(cluster_name, gene_list) {
+  gene_text <- paste(gene_list, collapse = ", ")
+  
+  message <- paste0(
+    "You are a biomedical expert annotating single-cell clusters based on marker genes. ",
+    "This data is from mouse bone and bone marrow.",
+    "Assign the most specific immune or stromal cell subtype possible (e.g. naive B cell, M2 macrophage, effector CD8+ T cell, regulatory T cell, fibroblast subtype, endothelial subtype, cancer-associated fibroblast) based on canonical markers. ",
+    "Here are the top marker genes for one cluster: ",
+    gene_text,
+    ". Give only the cell type name as output, no explanation."
+  )
+  
+  res <- create_chat_completion(
+    model = "gpt-4o",
+    messages = list(list(role = "user", content = message))
+  )
+  
+  # Extract cell type from the choices data.frame
+  celltype <- res$choices$message.content[1]
+  
+  data.frame(
+    cluster = cluster_name,
+    celltype = celltype,
+    stringsAsFactors = FALSE
+  )
+}
+
+annotations <- bind_rows(lapply(names(marker_list), function(cl) {
+  annotate_cluster(cl, marker_list[[cl]])
+}))
+
+annotations
+
+
+Idents(merged_obj)<-merged_obj$SCT_snn_res.0.8
+
+Idents(merged_obj) <- factor(Idents(merged_obj))  
+
+annotations$celltype <- ifelse(annotations$cluster %in% c("8", "9", "17"), 
+                               "Tumor", 
+                               annotations$celltype)
+
+# Add as new metadata column
+merged_obj$GPT.0.8 <- annotations$celltype[match(Idents(merged_obj), annotations$cluster)]
+
+# Check result
+table(merged_obj$GPT.0.8)
+
+
+merged_obj<-RenameIdents(merged_obj, `Stromal cell (CXCL12-abundant reticular cell subtype)` = "Osteoblast", `Skeletal muscle cell` = "Skeletal Muscle", `Skeletal Muscle Cell` = "Skeletal Muscle", `Myeloid-derived suppressor cell` = "Neutrophil", `Osteoblast.` = "Osteoblast", `Effector CD8+ T cell` = "Megakaryocyte", `Osteocyte` = "Osteoblast")
+
+merged_obj <- subset(merged_obj, idents = setdiff(unique(Idents(merged_obj)), c("Fibroblast")))
+
+
+# Plot
+DimPlot(merged_obj, group.by = "GPT.0.8", label = TRUE, raster = FALSE)
+
+write.csv(markers, "merged_obj_no_tumor_SCT_snn_res.0.4_markers.csv")
+
+saveRDS(merged_obj, "merged_obj_clustered_named_without_tumor.rds")
+
+merged_obj<-readRDS("~/Desktop/HD visium experiment/RDS files/lastest/Merged_sctransformed_final.rds")
+
+Idents(merged_obj)<-merged_obj$GPT.0.8
+DimPlot(merged_obj, label = T)
+
+```
+
+#establish colors and split object
+```{r}
+my_colors <- c(
+  "B cell" = "#27C2F5",     
+  "Plasma cell" = "#3C5488FF",
+
+  "Skeletal Muscle" = "#FFB90F", 
+  
+  "Osteoblast" = "#BCEE68",
+  "Osteoclast" = "#006606", 
+  "Chondrocyte" = "#5DFC98",
+
+  "Megakaryocyte" = "#B03131", 
+  "Erythrocyte"= "#FF0000",
+
+  "Neutrophil" = "#9C1690", 
+  "Eosinophil" = "#DA70D6",
+  "MDSC" = "#5F089E", 
+
+  "Tumor" = "#F0F921FF", 
+  "NA" = "darkGrey"
+)
+
+merged_obj = UpdateSeuratObject(merged_obj)
+
+split<-SplitObject(merged_obj, split.by = "sample")
+Naive<-split$Naive
+Naive <- subset(Naive, idents = setdiff(unique(Idents(Naive)), c("Tumor")))
+PMN<-split$PMN
+PMN <- subset(PMN, idents = setdiff(unique(Idents(PMN)), c("Tumor")))
+MacroMet<-split$MacroMet
+
+Naive$celltypes<-Idents(Naive)
+PMN$celltypes<-Idents(PMN)
+MacroMet$celltypes<-Idents(MacroMet)
+
+```
+
+#Figure 2: heatmap
+```{r}
+marker_genes <- c("Gypa", "Hba-a1", "Hba-a2", "Ppbp", "Pf4", "Tubb1", "Mpo", "Elane", "Ngp", "Prg2", "Prg3", "Epx", "Cd74", "Cd79b", "Cd19", "Ighg2b", "Jchain", "Igkc", "Myh7", "Myh4", "Myh1", "Sp7", "Runx2", "Ctsk", "Acp5", "Oscar", "Col10a1", "Comp", "Acan", "Vim", "Krt8", "Wnt7b", "Pecam1", "Emcn", "Cdh5", "Sost", "Dmp1", "Opg", "Rankl")
+
+celltype_order <- c("Erythrocyte", "Megakaryocyte", "Neutrophil", "Eosinophil", "B cell", "Plasma cell", "Stromal Cell", "Fibroblast", "Skeletal Muscle", "Osteoblast","Osteoclast","Chondrocyte","Tumor")
+
+merged_obj$celltype<-Idents(merged_obj)
+
+avg_exp <- AggregateExpression(
+  merged_obj, 
+  features = marker_genes, 
+  group.by = "celltype", 
+  assays = "SCT", 
+  slot = "data"
+)
+
+# Convert to matrix
+exp_matrix <- as.matrix(avg_exp$SCT)
+
+# Reorder rows (genes)
+exp_matrix <- exp_matrix[marker_genes[marker_genes %in% rownames(exp_matrix)], , drop = FALSE]
+
+# Reorder columns (cell types)
+exp_matrix <- exp_matrix[, celltype_order[celltype_order %in% colnames(exp_matrix)], drop = FALSE]
+
+# Transpose to swap axes (genes on x, cell types on y)
+exp_matrix <- t(exp_matrix)
+
+# Plot heatmap
+p1 <- pheatmap(
+  exp_matrix,
+  cluster_rows = FALSE,
+  cluster_cols = FALSE, 
+  scale = "column",   # important: scale along genes now
+  color = colorRampPalette(c("grey", "white", "firebrick"))(100),
+  border_color = NA,
+  fontsize_row = 10,   # smaller y-axis (cell types)
+  fontsize_col = 10,   # smaller x-axis (genes)
+)
+pdf("cell_marker_heatmap.pdf", height = 4, width = 7)
+print(p1)
+
+
+
+```
+
+#Figure 2: UMAPs and SpatialFeaturePlots
+```{r}
+Naive$celltype <- factor(
+  Naive$celltypes,
+  levels = names(my_colors)
+)
+PMN$celltype <- factor(
+  PMN$celltypes,
+  levels = names(my_colors)
+)
+MacroMet$celltype <- factor(
+  MacroMet$celltypes,
+  levels = names(my_colors)
+)
+
+
+# Now plot with consistent legend order and colors
+p1<-DimPlot(
+  Naive,
+  group.by = "celltype",
+  pt.size = 2,
+  cols = my_colors,
+  label = F,
+  raster = T
+)
+p2<-DimPlot(
+  PMN,
+  group.by = "celltype",
+  pt.size = 2,
+  cols = my_colors,
+  label = F,
+  raster = T
+)
+p3<-DimPlot(
+  MacroMet,
+  group.by = "celltype",
+  pt.size = 2,
+  cols = my_colors,
+  label = F,
+  raster = T
+)
+p4<-p1+p2+p3
+
+
+pdf("UMAP_clustered_GPT0.8.pdf", width = 15, height = 5)
+print(p4)
+
+
+
+
+
+
+```
+
+
+
+#Figure 2: stacked bar chart
+```{r}
+merged_obj$celltype<-Idents(merged_obj)
+
+excluded <- c("NA", "Tumor", "Skeletal Muscle")
+df <- data.frame(
+  celltype = as.character(Idents(merged_obj)),    # convert factor to character
+  sample = as.character(merged_obj$sample)       # flatten to character vector
+)
+
+# Remove any NA
+df <- df %>% 
+  filter(
+    !is.na(celltype), 
+    !is.na(sample), 
+    !celltype %in% c("Tumor", "Skeletal Muscle")
+  )
+# Count cells per sample per celltype
+counts_df <- df %>%
+  group_by(sample, celltype) %>%
+  summarise(n = n(), .groups = "drop")
+
+# Calculate proportions per sample
+prop_df <- counts_df %>%
+  group_by(sample) %>%
+  mutate(proportion = n / sum(n)) %>%
+  ungroup()
+sample_order <- c("MacroMet", "PMN", "Naive")
+counts_df$sample <- factor(counts_df$sample, levels = sample_order)
+prop_df$sample <- factor(prop_df$sample, levels = sample_order)
+
+
+p1<-ggplot(prop_df, aes(x = sample, y = proportion, fill = celltype)) +
+  geom_bar(stat = "identity", position = "fill") +
+  coord_flip() +
+  scale_y_continuous(labels = scales::percent) +
+  scale_fill_manual(values = my_colors) +
+  labs(
+    fill = "Cell Type"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.y = element_text(size = 12),
+    axis.text.x = element_text(size = 12),
+    panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank()  
+  )
+p1
+
+pdf("celltype_stacked_barchart.pdf", width = 15, height = 2)
+print(p1)
+
+
+
+
+```
+
+#Figure 2: cropped spatial plots
+```{r}
+# Find coordinates: 
+coords <- GetTissueCoordinates(Naive, image = "slice1")
+head(coords)
+
+# crop a region and visualize: 
+coords <- GetTissueCoordinates(Naive, image = "slice1")
+
+cells_to_keep <- coords[
+  coords$x > 10000.08 & coords$x < 20006.94 &
+    coords$y > 15000.08 & coords$y < 35006.94,
+  "cell"
+]
+
+cropped_obj <- subset(Naive, cells = cells_to_keep)
+
+
+p1<-SpatialDimPlot(cropped_obj, pt.size.factor = 6, cols = my_colors, shape = 22)
+pdf("Naive_cropped_spatial_plot.pdf", height = 5, width = 5)
+print(p1)
+
+#Cropped object
+coords <- GetTissueCoordinates(PMN)
+
+#use this to get the coordinates
+ggplot(coords, aes(x = x, y = y)) +
+  geom_point(alpha = 0.5) +
+  scale_y_reverse() +  
+  theme_minimal()
+
+
+
+
+# crop a region and visualize: 
+coords <- GetTissueCoordinates(PMN, image = "slice1.2")
+
+cells_to_keep <- coords[
+  coords$x > 30000.08 & coords$x < 40006.94 &
+    coords$y > 30000.08 & coords$y < 40006.94,
+  "cell"
+]
+
+PMN_cropped_obj <- subset(PMN, cells = cells_to_keep)
+
+
+p2<-SpatialDimPlot(PMN_cropped_obj, pt.size.factor = 7.5, cols = my_colors, shape = 22)
+pdf("PMN_cropped_spatial_plot.pdf", height = 5, width = 5)
+print(p2)
+
+
+
+# Find coordinates: 
+coords <- GetTissueCoordinates(MacroMet, image = "slice1.3")
+
+cells_to_keep <- coords[
+  coords$x > 22000.08 & coords$x < 36006.94 &
+    coords$y > 25000.08 & coords$y < 32006.94,
+  "cell"
+]
+
+Distal_cropped_obj <- subset(MacroMet, cells = cells_to_keep)
+
+p3<-SpatialDimPlot(Distal_cropped_obj, pt.size.factor = 8,  shape = 22, cols = my_colors)
+pdf("Distal_Tumor_cropped_spatial_plot.pdf", height = 5, width = 5)
+print(p3)
+
+cells_to_keep <- coords[
+  coords$x > 9000.08 & coords$x < 18006.94 &
+    coords$y > 9000.08 & coords$y < 18006.94,
+  "cell"
+]
+
+Proximal_cropped_obj <- subset(MacroMet, cells = cells_to_keep)
+
+p4<-SpatialDimPlot(Proximal_cropped_obj, pt.size.factor = 7, cols = my_colors, shape = 22)
+pdf("Proximal_Tumor_cropped_spatial_plot.pdf", height = 5, width = 5)
+print(p4)
+
+
+
+p5<-p1+p2+p3+p4
+
+pdf("Cropped_spatial_plot.pdf", height = 5, width = 20)
+print(p5)
+
+```
+
+#Figure 2: cell type ratios
+```{r}
+excluded <- c("NA", "Tumor", "Skeletal Muscle")
+df <- data.frame(
+  celltype = as.character(Idents(merged_obj)),    
+  sample = as.character(merged_obj$sample)       
+)
+
+# Remove any NA
+df <- df %>% 
+  filter(
+    !is.na(celltype), 
+    !is.na(sample), 
+    !celltype %in% c("Tumor", "Skeletal Muscle")
+  )
+# Count cells per sample per cell type
+counts_df <- df %>%
+  group_by(sample, celltype) %>%
+  summarise(n = n(), .groups = "drop")
+
+counts_wide <- counts_df %>%
+  pivot_wider(names_from = celltype, values_from = n, values_fill = 0)
+
+counts_wide
+
+
+ratios_df <- counts_wide %>%
+  mutate(
+    B_to_Plasma = `B cell` / `Plasma cell`,
+    Osteoblast_to_Osteoclast = `Osteoblast` / `Osteoclast`
+  ) %>%
+  select(sample, B_to_Plasma, Osteoblast_to_Osteoclast)
+
+ratios_df
+
+ratios_df$sample <- factor(ratios_df$sample, levels = c("Naive", "PMN", "MacroMet"))
+
+
+# B cell / Plasma cell ratio
+p1<-ggplot(ratios_df, aes(x = sample, y = B_to_Plasma)) +
+  geom_bar(stat = "identity", fill = "#27C2F5") +
+    theme_minimal(base_size = 14) +
+  theme(
+    panel.grid.major = element_blank(),  # remove major grid lines
+    panel.grid.minor = element_blank(),  # remove minor grid lines
+    axis.text.x = element_text(size = 12),
+    axis.text.y = element_text(size = 12)
+  ) +
+  labs(y = "B cell / Plasma cell ratio")
+
+# Osteoblast / Osteocyte ratio
+p2<-ggplot(ratios_df, aes(x = sample, y = Osteoblast_to_Osteoclast)) +
+  geom_bar(stat = "identity", fill = "#BCEE68") +
+    theme_minimal(base_size = 14) +
+  theme(
+    panel.grid.major = element_blank(),  # remove major grid lines
+    panel.grid.minor = element_blank(),  # remove minor grid lines
+    axis.text.x = element_text(size = 12),
+    axis.text.y = element_text(size = 12)
+  ) +
+  labs(y = "Osteoblast / Osteoclast ratio")
+
+p2 | p1
+
+
+
+total_cells_per_sample <- counts_df %>%
+  group_by(sample) %>%
+  summarise(total_cells = sum(n), .groups = "drop")
+
+eos_df <- counts_df %>%
+  filter(celltype == "Eosinophil") %>%
+  left_join(total_cells_per_sample, by = "sample") %>%
+  mutate(percent = n / total_cells * 100)
+
+eos_df$sample <- factor(eos_df$sample, levels = c("Naive", "PMN", "MacroMet"))
+
+p3 <- ggplot(eos_df, aes(x = sample, y = percent)) +
+  geom_bar(stat = "identity", fill = "#DA70D6") +
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.text.x = element_text(size = 12),
+    axis.text.y = element_text(size = 12)
+  ) +
+  labs(
+    x = "Sample",
+    y = "Percent of Eosinophils"
+  )
+
+p2 | p1 | p3
+
+
+```
+
+#Subcluster Tumors
+```{r}
+#Subset the tumor cells and recluster with banksy
+tumor_cells <- WhichCells(MacroMet, idents = "Tumor")
+Tumor <- subset(MacroMet, cells = tumor_cells)
+
+Tumor <- RunBanksy(Tumor,
+  lambda = 0.7, verbose = TRUE,
+  assay = "SCT", slot = "data", features = "variable",
+  k_geom = 50,
+)
+DefaultAssay(Tumor) <- "BANKSY"
+Tumor <- RunPCA(Tumor, assay = "BANKSY", reduction.name = "pca.banksy", features = rownames(Tumor), npcs = 30)
+ElbowPlot(Tumor)
+
+Tumor <- FindNeighbors(Tumor, reduction = "pca.banksy", dims = 1:9)
+Tumor <- FindClusters(Tumor, resolution = 0.05)
+
+SpatialDimPlot(Tumor, pt.size.factor = 5)
+
+Tumor<-RenameIdents(Tumor, `0` = "ProximalTumor1", `1` = "ProximalTumor2", `2` = "DistalTumor", `3` = "Tumor", `4` = "Tumor", `5` = "Tumor", `6` = "Tumor", `7` = "Tumor", `8` = "Tumor", `9` = "Tumor", `10` = "Tumor", `11` = "Tumor")
+
+SpatialDimPlot(Tumor, pt.size.factor = 5)
+
+
+subclusters <- Idents(Tumor)
+
+
+subcluster_labels <- paste("_", subclusters)
+names(subcluster_labels) <- names(subclusters)
+
+MacroMet$subcluster <- NA  # initialize with NAs
+MacroMet$subcluster[names(subcluster_labels)] <- subcluster_labels
+
+MacroMet$cluster_plus_sub <- ifelse(
+  is.na(MacroMet$subcluster),
+  as.character(MacroMet$celltype),
+  MacroMet$subcluster
+)
+
+Idents(MacroMet)<-MacroMet$cluster_plus_sub
+MacroMet<-RenameIdents(MacroMet, `_ DistalTumor` = "Distal Tumor", `_ Tumor` = "Tumor", `_ ProximalTumor1` = "Proximal Tumor 1", `_ ProximalTumor2` = "Proximal Tumor 2")
+
+saveRDS(MacroMet, "MacroMet_named_subclustered_tumor.rds")
+MacroMet<-readRDS("~/Desktop/HD visium experiment/RDS files/lastest/MacroMet_named_subclustered_tumor.rds")
+
+
+my_colors <- c(
+  "B cell" = "#27C2F5",     
+  "Plasma cell" = "#3C5488FF",
+
+  "Skeletal Muscle" = "#B5F5B5", 
+  "Osteoblast" = "#BCEE68",
+  "Osteoclast" = "#006606", 
+  "Chondrocyte" = "#5DFC98",
+
+  "Megakaryocyte" = "#B03131", 
+  "Erythrocyte"= "#FF0000",
+
+  "Neutrophil" = "#9C1690", 
+  "Eosinophil" = "#DA70D6",
+
+  "Tumor" = "#F29B30", 
+  "Proximal Tumor 1" = "#FFB90F",
+  "Proximal Tumor 2" = "#FFDA21",
+  "Distal Tumor" = "#FF7A21", 
+  "NA" = "darkGrey"
+)
+
+MacroMet<-readRDS("~/Desktop/HD visium experiment/RDS files/lastest/MacroMet_named_subclustered_tumor.rds")
+
+```
+
+#Banksy neighborhood analysis: MacroMet
+```{r}
+DefaultAssay(MacroMet) <- "SCT"
+MacroMet[["SCT"]] <- as(MacroMet[["SCT"]], "Assay")
+
+MacroMet <- RunBanksy(MacroMet,
+  lambda = 1, verbose = TRUE,
+  assay = "SCT", slot = "data", features = "variable",
+  k_geom = 50
+)
+
+
+DefaultAssay(MacroMet) <- "BANKSY"
+MacroMet <- RunPCA(MacroMet, assay = "BANKSY", reduction.name = "pca.banksy", features = rownames(MacroMet), npcs = 30)
+ElbowPlot(MacroMet, ndims = 20, reduction = "pca.banksy")
+
+MacroMet <- FindNeighbors(MacroMet, reduction = "pca.banksy", dims = 1:15)
+MacroMet <- FindClusters(MacroMet, cluster.name = "niches", resolution = 0.08)
+
+SpatialDimPlot(MacroMet, pt.size.factor = 5)
+
+saveRDS(MacroMet, "MacroMet_Niche.rds")
+MacroMet<-readRDS("~/Desktop/HD visium experiment/MacroMet_Niche.rds")
+
+MacroMet<-UpdateSeuratObject(MacroMet)
+
+```
+
+#Figure 3: spatial maps (cell annotations & banksy neighborhoods)
+```{r}
+Idents(Proximal_cropped_obj)<-Proximal_cropped_obj$cluster_plus_sub
+Proximal_cropped_obj<-RenameIdents(Proximal_cropped_obj, `_ Tumor` = "Tumor", `_ ProximalTumor1` = "Proximal Tumor 1", `_ ProximalTumor2` = "Proximal Tumor 2", `_ DistalTumor` = "Distal Tumor")
+
+Idents(Distal_cropped_obj)<-Distal_cropped_obj$cluster_plus_sub
+Distal_cropped_obj<-RenameIdents(Distal_cropped_obj, `_ Tumor` = "Tumor", `_ ProximalTumor1` = "Proximal Tumor 1", `_ ProximalTumor2` = "Proximal Tumor 2", `_ DistalTumor` = "Distal Tumor")
+
+
+p1<-SpatialDimPlot(Proximal_cropped_obj, cols = my_colors, pt.size = 7.5, shape = 22)+
+  theme(
+    legend.text = element_text(size = 16),
+    legend.title = element_text(size = 16)
+  ) + guides(
+    fill = guide_legend(override.aes = list(size = 6))
+  )
+p2<-SpatialDimPlot(Distal_cropped_obj, cols = my_colors, pt.size = 8, shape = 22)+
+  theme(
+    legend.text = element_text(size = 16),
+    legend.title = element_text(size = 16)
+  ) + guides(
+    fill = guide_legend(override.aes = list(size = 6))
+  )
+p3<-p1+p2
+pdf("Spatial_MacroMet_subclustered_tumor.pdf", height = 8, width = 15)
+print(p3)
+
+
+pdf(file ="MacroMet_banksy_clustered_spatialdimplot.pdf", width = 5, height =5)
+niche.plot <- SpatialDimPlot(MacroMet, group.by = "niches", label = T, repel = T, label.size = 4, pt.size.factor = 2.5, shape = 22)
+print(niche.plot)
+
+
+# Define highlight status only for niches 1, 2, and 4
+Distal_cropped_obj$highlight <- ifelse(
+  Distal_cropped_obj$niches %in% c(1, 2, 4),  
+  as.character(Distal_cropped_obj$niches),
+  "Other"
+)
+
+Distal_cropped_obj$highlight <- factor(
+  Distal_cropped_obj$highlight,
+  levels = c("Other", "1", "2", "4")
+)
+
+Proximal_cropped_obj$highlight <- ifelse(
+  Proximal_cropped_obj$niches %in% c(1, 2, 4),  
+  as.character(Proximal_cropped_obj$niches),
+  "Other"
+)
+
+Proximal_cropped_obj$highlight <- factor(
+  Proximal_cropped_obj$highlight,
+  levels = c("Other", "1", "2", "4")
+)
+
+cols_niche <- c(
+  "Other" = "grey80",
+  "1" = "mediumaquamarine",
+  "2" = "tomato",
+  "4" = "lightpink"
+)
+
+pdf("MacroMet_banksy_clustered_spatialdimplot.pdf", width = 15, height = 8)
+p2 <- SpatialDimPlot(
+  Distal_cropped_obj,
+  group.by = "highlight",
+  pt.size.factor = 9,
+  shape = 22,
+  cols = cols_niche        
+)+
+  theme(
+    legend.text = element_text(size = 16),
+    legend.title = element_text(size = 16)
+  ) + guides(
+    fill = guide_legend(override.aes = list(size = 6))
+  )
+p1 <- SpatialDimPlot(
+  Proximal_cropped_obj,
+  group.by = "highlight",
+  pt.size.factor = 7.5,
+  shape = 22,
+  cols = cols_niche        
+)+
+  theme(
+    legend.text = element_text(size = 16),
+    legend.title = element_text(size = 16)
+  ) + guides(
+    fill = guide_legend(override.aes = list(size = 6))
+  )
+p3<-p1+p2
+print(p3)
+
+```
+
+
+#Figure 3: cell types in niches
+```{r}
+#Stroma & Immune stacked bar chart
+stroma_cells <- c("Chondrocyte", "Osteoblast", "Osteoclast", "Skeletal Muscle")
+immune_cells <- c("B cell", "Plasma cell", "Neutrophil", "Eosinophil", "Erythrocyte", "Megakaryocyte")
+
+meta <- MacroMet@meta.data
+
+meta_filtered <- meta %>%
+  filter(niches %in% c(1,2, 4)) %>%
+  mutate(category = case_when(
+    cluster_plus_sub %in% stroma_cells ~ "Stroma",
+    cluster_plus_sub %in% immune_cells ~ "Immune",
+    TRUE ~ "Other"
+  )) %>%
+  filter(category != "Other")
+
+counts <- meta_filtered %>%
+  group_by(niches, category) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  group_by(niches) %>%
+  mutate(proportion = count / sum(count))
+
+p1<-ggplot(counts, aes(x = factor(niches), y = proportion, fill = category)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = c("Stroma" = "#91C484", "Immune" = "#BF3434")) +
+  labs(x = "Niche", y = "Proportion", fill = "Cell Category") +
+  theme_classic()
+
+pdf("immune_stroma_barplots.pdf", width = 4, height = 3)
+print(p1)
+
+
+#PieCharts by immune/stroma
+MacroMet_counts <- MacroMet_counts %>%
+  filter(Var1 != "Skeletal Muscle")
+
+stromal_df <- MacroMet_counts %>%
+  filter(Var1 %in% stromal_cells) %>%
+  group_by(Var2, Var1) %>%
+  summarise(Count = sum(value), .groups = "drop") %>%
+  group_by(Var2) %>%
+  mutate(Frac = Count / sum(Count)) %>%
+  mutate(CellClass = "Stromal")
+immune_df <- MacroMet_counts %>%
+  filter(Var1 %in% leukocytes) %>%
+  group_by(Var2, Var1) %>%
+  summarise(Count = sum(value), .groups = "drop") %>%
+  group_by(Var2) %>%
+  mutate(Frac = Count / sum(Count)) %>%
+  mutate(CellClass = "Immune")
+pie_df <- bind_rows(stromal_df, immune_df)
+
+pie_df$Var2 <- factor(pie_df$Var2, levels = c("1", "2", "4"))
+pie_df$CellClass <- factor(pie_df$CellClass, levels = c("Stromal", "Immune"))
+
+p1<-ggplot(pie_df, aes(x = "", y = Frac, fill = Var1)) +
+  geom_bar(stat = "identity", width = 1, color = "white") +
+  coord_polar(theta = "y") +
+  facet_grid(
+    rows = vars(Var2),
+    cols = vars(CellClass)
+  ) +
+    scale_fill_manual(values = my_colors) +
+  theme_void() +
+  labs(fill = "Cell type") +
+  ggtitle("Cell-type composition by niche")
+
+pdf("Pie grid cell composition by niche.pdf", height = 6, width = 3)
+print(p1)
+```
+
+
+#Figure 3: Distance Analysis & Ridgeplots
+```{r}
+scalefactors <- jsonlite::fromJSON("~/Desktop/HD visium experiment/Raw data/M2_macrometastatic/square_008um/spatial/scalefactors_json.json")
+scale_factor <- 8 / scalefactors$spot_diameter_fullres
+
+
+cell_types <- c("B cell", "Chondrocyte", "Neutrophil", "Erythrocyte",
+                "Osteoblast", "Megakaryocyte", "Osteoclast", "Plasma cell",
+                "Eosinophil", "Skeletal Muscle")
+
+tumor_types <- c("_ DistalTumor", "_ ProximalTumor1", "_ ProximalTumor2") 
+
+coords <- GetTissueCoordinates(MacroMet)
+coords_num <- coords %>%
+  as.data.frame() %>%
+  select(where(is.numeric)) %>%
+  as.matrix()
+rownames(coords_num) <- rownames(coords)
+coords_um <- coords_num * scale_factor
+
+meta <- MacroMet@meta.data %>% mutate(barcode = rownames(.))
+
+#Function to compute distances
+compute_distances <- function(query_type, tumor_type, coords_um, meta) {
+  
+  # Query cells
+  idx_query <- which(!is.na(meta$cluster_plus_sub) & meta$cluster_plus_sub == query_type)
+  if(length(idx_query) == 0) {
+    warning(paste("No cells found for query cell type:", query_type))
+    return(NULL)
+  }
+  query_barcodes <- meta$barcode[idx_query]
+  query_coords <- coords_um[query_barcodes, , drop = FALSE]
+  
+  # Tumor cells
+  idx_tumor <- which(!is.na(meta$cluster_plus_sub) & meta$cluster_plus_sub == tumor_type)
+  if(length(idx_tumor) == 0) {
+    warning(paste("No cells found for tumor type:", tumor_type))
+    return(NULL)
+  }
+  tumor_barcodes <- meta$barcode[idx_tumor]
+  tumor_coords <- coords_um[tumor_barcodes, , drop = FALSE]
+  
+  # Compute minimum distances
+  min_dists <- sapply(1:nrow(query_coords), function(i) {
+    min(sqrt((query_coords[i,1] - tumor_coords[,1])^2 + 
+             (query_coords[i,2] - tumor_coords[,2])^2))
+  })
+  
+  data.frame(
+    barcode = query_barcodes,
+    celltype = query_type,
+    tumor_type = tumor_type,
+    distance_um = min_dists
+  )
+}
+
+# ------------------------
+# Compute distances for all cell types and tumors
+# ------------------------
+all_ridge_df <- lapply(cell_types, function(ct) {
+  lapply(tumor_types, function(tt) {
+    compute_distances(ct, tt, coords_um, meta)
+  }) %>% bind_rows()
+}) %>% bind_rows()
+
+
+
+#Plot
+desired_order <- c(
+  "Chondrocyte", "Osteoblast", "Osteoclast", "Skeletal Muscle",
+  "B cell", "Plasma cell", "Neutrophil", "Eosinophil",
+  "Erythrocyte", "Megakaryocyte"
+)
+
+# Convert celltype to factor with specified levels
+all_ridge_df <- all_ridge_df %>%
+  mutate(celltype = factor(celltype, levels = desired_order))
+
+# Ridge plot with custom y-axis order
+p_ridge_all <- ggplot(all_ridge_df, aes(x = distance_um, y = celltype, fill = tumor_type)) +
+  ggridges::geom_density_ridges(alpha = 0.6, scale = 0.99, rel_min_height = 0.01) +
+  theme_classic() +
+  scale_fill_manual(values = c(
+  "_ ProximalTumor1" = "#FFB90F",   
+  "_ ProximalTumor2" = "#FFDA21",  
+  "_ DistalTumor"    = "#FF7A21"   
+)) +
+  labs(
+    x = "Distance to tumor edge (µm)",
+    y = "",
+    title = "Spatial distribution of cell types relative to Distal and Proximal Tumors"
+  ) +
+  theme(
+    legend.position = "top",
+    axis.text.y = element_text(size = 10)
+  )
+
+p_ridge_all
+
+pdf("All_cell_types_distance_ridgeplot__tumors.pdf", width = 6, height = 12)
+print(p_ridge_all)
+
+```
+#Figure 4:Differential Gene Expression & Upset Plot
+```{r}
+DefaultAssay(MacroMet)<-"SCT"
+
+# Initialize TumorID as NA
+MacroMet$TumorID <- NA
+
+# Map the tumor clusters
+MacroMet$TumorID[MacroMet$cluster_plus_sub == "_ ProximalTumor1"] <- "ProximalTumor1"
+MacroMet$TumorID[MacroMet$cluster_plus_sub == "_ ProximalTumor2"] <- "ProximalTumor2"
+MacroMet$TumorID[MacroMet$cluster_plus_sub == "_ DistalTumor"]   <- "DistalTumor"
+
+# Check the mapping
+table(MacroMet$TumorID)
+
+# Set Seurat identities
+Idents(MacroMet) <- "TumorID"
+
+table(MacroMet$TumorID)
+
+
+deg_P1 <- FindMarkers(
+  MacroMet,
+  ident.1 = "ProximalTumor1",
+  ident.2 = c("ProximalTumor2", "DistalTumor"),
+  test.use = "MAST"
+)
+
+deg_P2 <- FindMarkers(
+  MacroMet,
+  ident.1 = "ProximalTumor2",
+  ident.2 = c("ProximalTumor1", "DistalTumor"),
+  test.use = "MAST"
+)
+
+deg_Distal <- FindMarkers(
+  MacroMet,
+  ident.1 = "DistalTumor",
+  ident.2 = c("ProximalTumor1", "ProximalTumor2"),
+  test.use = "MAST"
+)
+
+library(UpSetR)
+
+# thresholds
+fdr_cutoff <- 0.05
+
+# ---------------------------
+# Upregulated genes
+# ---------------------------
+deg_list_up <- list(
+  ProximalTumor1 = rownames(
+    deg_P1[deg_P1$p_val_adj < fdr_cutoff & deg_P1$avg_log2FC > 0, ]
+  ),
+  ProximalTumor2 = rownames(
+    deg_P2[deg_P2$p_val_adj < fdr_cutoff & deg_P2$avg_log2FC > 0, ]
+  ),
+  DistalTumor = rownames(
+    deg_Distal[deg_Distal$p_val_adj < fdr_cutoff & deg_Distal$avg_log2FC > 0, ]
+  )
+)
+
+p1<-upset(
+  fromList(deg_list_up),
+  order.by = "freq",
+  main.bar.color = "firebrick",
+  sets.bar.color = "salmon",
+  text.scale = c(2, 2, 2, 2, 2, 2),
+  point.size = 4,
+  line.size = 1,
+  mainbar.y.label = "Upregulated gene overlap"
+)
+pdf("upset_upregulated_only.pdf", height = 5, width = 6)
+print(p1)
+```
+#Figure 4: GSEA
+```{r}
+library(msigdbr)
+library(dplyr)
+
+get_msigdb_sets <- function(species = "Mus musculus") {
+  
+  # Hallmark
+  hallmark <- msigdbr(species = species, category = "H") %>%
+    select(gs_name, gene_symbol)
+  
+  # GO Biological Process
+  gobp <- msigdbr(species = species, category = "C5", subcategory = "BP") %>%
+    select(gs_name, gene_symbol)
+  
+  # Combine
+  all_sets <- bind_rows(hallmark, gobp)
+  
+  # Convert to list for fgsea
+  split(all_sets$gene_symbol, all_sets$gs_name)
+}
+
+gene_sets <- get_msigdb_sets("Mus musculus")
+
+run_fgsea <- function(deg, pathways, name) {
+  gene_list <- setNames(deg$avg_log2FC, rownames(deg))
+  gene_list <- gene_list[!is.na(gene_list)]
+  gene_list <- sort(gene_list, decreasing = TRUE)
+  
+  # break ties (important for Seurat/MAST)
+  gene_list <- gene_list + rnorm(length(gene_list), 0, 1e-6)
+  
+  fgsea(
+    pathways = pathways,
+    stats = gene_list,
+    nperm = 10000
+  ) %>%
+    as.data.frame() %>%
+    mutate(comparison = name)
+}
+
+
+
+# Run GSEA on tumor-vs-rest DE results
+gsea_P1  <- run_fgsea(deg_P1, gene_sets, "ProximalTumor1")
+gsea_P2  <- run_fgsea(deg_P2, gene_sets, "ProximalTumor2")
+gsea_D   <- run_fgsea(deg_Distal, gene_sets, "DistalTumor")
+
+# Combine all results
+gsea_all <- bind_rows(gsea_P1, gsea_P2, gsea_D)
+
+# Reshape to wide format
+gsea_wide <- gsea_all %>%
+  select(pathway, comparison, NES, padj) %>%
+  pivot_wider(names_from = comparison, values_from = c(NES, padj)) %>%
+  janitor::clean_names()
+
+# Optional: simplify tumor columns for plotting
+gsea_tumor <- gsea_wide %>%
+  mutate(
+    P1 = nes_proximal_tumor1,
+    P2 = nes_proximal_tumor2,
+    D  = nes_distal_tumor,
+    
+    P1_padj = padj_proximal_tumor1,
+    P2_padj = padj_proximal_tumor2,
+    D_padj  = padj_distal_tumor
+  )
+
+label_map <- c(
+  "HALLMARK_MYC_TARGETS_V2" = "MYC Targets V2",
+  "HALLMARK_KRAS_SIGNALING_DN" = "KRAS signaling down",
+  "HALLMARK_E2F_TARGETS" = "E2F Targets",
+  "HALLMARK_NOTCH_SIGNALING" = "Notch signaling",
+  "HALLMARK_G2M_CHECKPOINT" = "G2M checkpoint",
+  "HALLMARK_HYPOXIA" = "Hypoxia",
+  "HALLMARK_GLYCOLYSIS" = "Glycolysis",
+  "HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION" = "EMT",
+  "HALLMARK_ANGIOGENESIS" = "Angiogenesis",
+  "HALLMARK_TGF_BETA_SIGNALING" = "TGFb signaling",
+  "HALLMARK_PROTEIN_SECRETION" = "Protein secretion",
+  "HALLMARK_INTERFERON_GAMMA_RESPONSE" = "IFNg response",
+  "HALLMARK_INTERFERON_ALPHA_RESPONSE" = "IFNa response",
+  "HALLMARK_ALLOGRAFT_REJECTION" = "Immune activation",
+  "GOBP_ANTIGEN_PROCESSING_AND_PRESENTATION_OF_EXOGENOUS_PEPTIDE_ANTIGEN_VIA_MHC_CLASS_II" = "Antigen presentation",
+  "GOBP_B_CELL_MEDIATED_IMMUNITY" = "B cell immunity",
+  "GOBP_CELL_KILLING" = "Cytotoxicity"
+)
+
+pathways_to_plot <- names(label_map)
+
+gsea_plot <- gsea_tumor %>%
+  filter(pathway %in% pathways_to_plot)
+
+
+gsea_long <- gsea_plot %>%
+  select(pathway, P1, P2, D, P1_padj, P2_padj, D_padj) %>%
+  pivot_longer(cols = c(P1, P2, D), names_to = "tumor", values_to = "NES") %>%
+  pivot_longer(cols = c(P1_padj, P2_padj, D_padj),
+               names_to = "padj_type",
+               values_to = "padj") %>%
+  filter(sub("_padj", "", padj_type) == tumor)
+
+gsea_long$pathway_label <- label_map[gsea_long$pathway]
+
+
+
+p1<-ggplot(gsea_long, aes(
+  x = tumor,
+  y = factor(pathway_label, levels = rev(label_map)),
+  color = NES,
+  size = -log10(padj)
+)) +
+  geom_point() +
+  
+  scale_color_gradient2(
+    low = "darkblue",
+    mid = "white",
+    high = "firebrick",
+    midpoint = 0
+  ) +
+  
+  labs(
+    x = "Tumor",
+    y = "",
+    color = "NES",
+    size = "-log10(FDR)"
+  ) +
+  
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    axis.text = element_text(color = "black", size = 12),
+    axis.title = element_text(color = "black", size = 14),
+    plot.title = element_text(size = 16, hjust = 0.5)
+  )
+p1
+
+pdf("GSEA_each tumor against the other two.pdf", height = 6, width = 5)
+
+
+
+
+```
+
+#Figure 4: Spatial cropped plots of module scores
+```{r}
+HALLMARK_INTERFERON_GAMMA_RESPONSE <- c("Adar","Apol6","Arid5b","Arl4a","Auts2","B2m","Bank1","Batf2","Bpgm","Bst2","Btg1","C1s1","Casp1","Casp3","Casp4","Casp7","Casp8","Ccl5","Ccl7","Cd274","Cd38","Cd40","Cd69","Cd74","Cd86","Cdkn1a","Cfb","Cfh","Ciita","Cmklr1","Cmpk2","Cmtr1","Cxcl10","Cxcl11","Cxcl9","Ddx60","Dhx58","Eif2ak2","Eif4e3","Epsti1","Fas","Fcgr1","Fgl2","Fpr1","Gbp3","Gch1","Gpr18","Gzma","H2-Aa","H2-DMa","Helz2","Herc6","Hif1a","Icam1","Ido1","Ifi27","Ifi30","Ifi35","Ifi44","Ifi44l","Ifih1","Ifit2","Ifit3","Ifitm2","Ifitm3","Ifnar2","Il10ra","Il15",'Il15ra','Il18bp','Il2rb','Il4ra','Il6','Il7','Irf1','Irf2','Irf4','Irf5','Irf7','Irf8','Irf9','Isg15','Isg20','Isoc1','Itgb7','Jak2','Lap3','Lats2','Lcp2','Lgals3bp','Ly6e','Lysmd2','Marchf1','Mthfd2','Mvp','Mx2',"Myd88","Nampt","Ncoa3",'Nfkb1','Nfkbia','Nlrc5','Nmi','Nod1','Nup93','Oas2','Oas3','Oasl1','Ogfr','P2ry14','Parp12','Parp14','Pde4b','Peli1','Pfkp','Pim1','Pla2g4a','Plscr1','Pml','Pnp','Pnpt1','Psma2','Psma3','Psmb10','Psmb2','Psmb8',"Psmb9","Psme1","Psme2","Ptgs2","Ptpn1","Ptpn2","Ptpn6",'Rapgef6','Rbck1','Rigi','Ripk1','Ripk2','Rnf213','Rnf31','Rsad2','Rtp4','Samd9l','Samhd1','Sectm1a','Selp','Serping1','Slamf7','Slc25a28','Socs1','Socs3','Sod2',"Sp110","Sppl2a","Sri","Sspn","St3gal5","St8sia4","Stat1",'Stat2','Stat3','Stat4','Tap1','Tapbp','Tdrd7','Tmt1b','Tnfaip2','Tnfaip3','Tnfaip6','Tnfsf10','Tor1b','Trafd1','Trim14','Trim21','Trim25','Trim26','Txnip',"Ube2l6","Upp1","Usp18","Vamp5","Vamp8","Vcam1","Wars1","Xaf1","Xcl1","Zbp1","Znfx1")
+
+HALLMARK_HYPOXIA<- c("Ackr3","Adm","Adora2b","Ak4","Akap12","Aldoa","Aldob","Aldoc","Ampd3","Angptl4",
+"Ankzf1","Anxa2","Atf3","Atp7a","B3galt6","B4galnt2","Bcan","Bcl2","Bgn","Bhlhe40",
+"Bnip3l","Brs3","Btg1","Car12","Casp6","Cav1","Cavin1","Cavin3","Ccn1","Ccn2",
+"Ccn5","Ccng2","Cdkn1a","Cdkn1b","Cdkn1c","Chst2","Chst3","Cited2","Col5a1","Cp",
+"Csrp2","Cxcr4","Dcn","Ddit3","Ddit4","Dpysl4","Dtna","Dusp1","Edn2","Efna1",
+"Efna3","Egfr","Eno1b","Eno2","Eno3","Ero1a","Errfi1","Ets1","Ext1","F3",
+"Fam162a","Fbp1","Fos","Fosl2","Foxo3","Gaa","Galk1","Gapdh-ps15","Gapdhs","Gbe1",
+"Gck","Gcnt2","Glrx","Gpc1","Gpc3","Gpc4","Gpi1","Grhpr","Gys1","Has1",
+"Hdlbp","Hexa","Hk1","Hk2","Hmox1","Hoxb9","Hs3st1","Hspa5","Ids","Ier3",
+"Igfbp1","Igfbp3","Il6","Ilvbl","Inha","Irs2","Isg20","Jmjd6","Jun","Kdelr3",
+"Kdm3a","Kif5a","Klf6","Klf7","Klhl24","Lalba","Large1","Ldha","Ldhc","Lox",
+"Lxn","Maff","Map3k1","Mif","Mt1","Mxi1","Myh9","Nagk","Ncan","Ndrg1",
+"Ndst1","Ndst2","Nedd4l","Nfil3","Noct","Nr3c1","P4ha1","P4ha2","Pam","Pck1",
+"Pdgfb","Pdk1","Pdk3","Pfkfb3","Pfkl","Pfkp","Pgam2","Pgf","Pgk1","Pgm1",
+"Pgm2","Phkg1","Pim1","Pklr","Pkp1","Plac8","Plaur","Plin2","Pnrc1","Ppargc1a",
+"Ppfia4","Ppp1r15a","Ppp1r3c","Prdx5","Prkca","Pygm","Rbpj","Rora","Rragd","S100a4",
+"Sap30","Scarb1","Sdc2","Sdc3","Sdc4","Selenbp1","Serpine1","Siah2","Slc25a1","Slc2a1",
+"Slc2a3","Slc2a5","Slc37a4","Slc6a6","Srpx","Stbd1","Stc1","Stc2","Sult2b1","Tes",
+"Tgfb3","Tgfbi","Tgm2","Tiparp","Tktl1","Tmem45a","Tnfaip3","Tpbg","Tpd52","Tpi1",
+"Tpst2","Ugp2","Vegfa","Vhl","Vldlr","Wsb1","Xpnpep1","Zfp292","Zfp36"
+)
+
+genes_present <- HALLMARK_HYPOXIA[HALLMARK_HYPOXIA %in% rownames(MacroMet)]
+if(length(genes_present) > 0){
+  MacroMet <- AddModuleScore(
+    object = MacroMet,
+    features = list(genes_present),
+    name = "HALLMARK_HYPOXIA",
+    assay = "SCT"  # must match DefaultAssay
+  )
+} else {
+  warning("No genes from the HALLMARK_HYPOXIA list are present in the object")
+}
+
+
+genes_present <- HALLMARK_INTERFERON_GAMMA_RESPONSE[HALLMARK_INTERFERON_GAMMA_RESPONSE %in% rownames(MacroMet)]
+if(length(genes_present) > 0){
+  MacroMet <- AddModuleScore(
+    object = MacroMet,
+    features = list(genes_present),
+    name = "HALLMARK_IFNG",
+    assay = "SCT"  # must match DefaultAssay
+  )
+} else {
+  warning("No genes from theHALLMARK_INTERFERON_GAMMA_RESPONSE list are present in the object")
+}
+
+#Crop object
+coords <- GetTissueCoordinates(MacroMet, image = "slice1.3")
+cells_to_keep <- coords[
+  coords$x > 22000.08 & coords$x < 36006.94 &
+    coords$y > 25000.08 & coords$y < 32006.94,
+  "cell"
+]
+Distal_cropped_obj <- subset(MacroMet, cells = cells_to_keep)
+
+cells_to_keep <- coords[
+  coords$x > 9000.08 & coords$x < 18006.94 &
+    coords$y > 9000.08 & coords$y < 18006.94,
+  "cell"
+]
+Proximal_cropped_obj <- subset(MacroMet, cells = cells_to_keep)
+
+
+#Plot
+p1<-SpatialFeaturePlot(Proximal_cropped_obj, features = "HALLMARK_HYPOXIA1", pt.size.factor = 8, shape = 22) + scale_fill_gradientn(colors = c("cyan", "orange", "red"), limits = c(-0.01, 0.04)) +
+  theme_minimal()
+
+p2<-SpatialFeaturePlot(Distal_cropped_obj, features = "HALLMARK_HYPOXIA1", pt.size.factor = 9, shape = 22) + scale_fill_gradientn(colors = c("cyan", "orange", "red"), limits = c(-0.01, 0.04)) +
+  theme_minimal() 
+
+p3<-SpatialFeaturePlot(Proximal_cropped_obj, features = "HALLMARK_IFNG1", pt.size.factor = 8, shape = 22) + scale_fill_gradientn(colors = c("cyan", "orange", "red"), limits = c(-0.01, 0.04)) +
+  theme_minimal()
+
+p4<-SpatialFeaturePlot(Distal_cropped_obj, features = "HALLMARK_IFNG1", pt.size.factor = 9, shape = 22) + scale_fill_gradientn(colors = c("cyan", "orange", "red"), limits = c(-0.01, 0.04)) +
+  theme_minimal() 
+
+
+
+
+combined_plot <- wrap_plots(
+  p1, p2,
+  p3, p4,
+  ncol = 2,   # 2 columns
+  nrow = 2    # 2 rows
+)
+
+pdf("Spatial_Hypoxia_IFNg.pdf", width = 12, height = 10)  # adjust size if needed
+print(combined_plot)
+dev.off()
+```
+
+#Figure 4: Regional CellChat
+```{r}
+# load spatial imaging information
+spatial.locs = GetTissueCoordinates(Proximal_cropped_obj@images[["slice1.3"]], scale = NULL, cols = c("imagerow", "imagecol")) 
+spatial.locs<-spatial.locs[,-3]
+spatial.locs <- as.matrix(spatial.locs)
+spatial.locs <- spatial.locs[rownames(meta), ]
+
+scalefactors = jsonlite::fromJSON(txt = file.path("/home/4479283/HDvisium/Raw_data/MacroMet/spatial/scalefactors_json.json"))
+spot.size = 8 
+conversion.factor = spot.size/scalefactors$spot_diameter_fullres
+spatial.factors = data.frame(ratio = conversion.factor, tol = spot.size/2)
+
+d.spatial <- computeCellDistance(coordinates = spatial.locs, ratio = spatial.factors$ratio, tol = spatial.factors$tol)
+min(d.spatial[d.spatial!=0])
+
+
+##create the cell chat object
+cellchat_Proximal_cropped_obj <- createCellChat(object = data.input, meta = meta, group.by = "labels", datatype = "spatial", coordinates = spatial.locs, spatial.factors = spatial.factors)
+
+cellchat_Proximal_cropped_obj@DB <- CellChatDB.use
+
+cellchat_Proximal_cropped_obj <- subsetData(cellchat_Proximal_cropped_obj)
+cellchat_Proximal_cropped_obj <- identifyOverExpressedGenes(cellchat_Proximal_cropped_obj)
+cellchat_Proximal_cropped_obj <- identifyOverExpressedInteractions(cellchat_Proximal_cropped_obj)
+
+
+cellchat_Proximal_cropped_obj <- computeCommunProb(cellchat_Proximal_cropped_obj, type = "truncatedMean", trim = 0.01, distance.use = FALSE, interaction.range = 500, contact.knn.k = 8, scale.distance = NULL)
+?computeCommunProb
+
+
+cellchat_Proximal_cropped_obj <- filterCommunication(cellchat_Proximal_cropped_obj, min.cells = 5)
+cellchat_Proximal_cropped_obj <- computeCommunProbPathway(cellchat_Proximal_cropped_obj)
+cellchat_Proximal_cropped_obj <- aggregateNet(cellchat_Proximal_cropped_obj)
+
+
+# Compute the network centrality scores
+cellchat_Proximal_cropped_obj <- netAnalysis_computeCentrality(cellchat_Proximal_cropped_obj, slot.name = "netP")
+
+###################################################################################
+####################RERUN THE ABOVE CODE FOR DISTAL TOO############################
+###################################################################################
+
+
+Proximal<-readRDS("~/Desktop/HD visium experiment/newCellChatProximal.rds")
+Distal<-readRDS("~/Desktop/HD visium experiment/newCellChatDistal.rds")
+
+
+pathways.PERIOSTIN <- c("PERIOSTIN") 
+pathways.GALECTIN <- c("GALECTIN")
+
+
+# Circle plot
+par(mfrow=c(1,1))
+p1<-netVisual_aggregate(Proximal, signaling = pathways.PERIOSTIN, layout = "circle")
+p1
+pdf("Periostin signaling proximal.pdf", height = 6, width = 6)
+print(p1)
+
+par(mfrow=c(1,1))
+p2<-netVisual_aggregate(Distal, signaling = pathways.GALECTIN, layout = "circle")
+p2
+pdf("Galectin signaling distal.pdf", height = 6, width = 6)
+print(p2)
+
+
+```
+#Figure 5: cropped spatial plots of osteoblasts/osteoclasts
+```{r}
+bone<-subset(merged_obj, idents = c("Osteoblast", "Osteoclast"))
+split<-SplitObject(bone, split.by = "sample")
+Naive<-split$Naive
+PMN<-split$PMN
+MacroMet<-split$MacroMet
+
+# Find coordinates: 
+coords <- GetTissueCoordinates(Naive, image = "slice1")
+head(coords)
+
+# crop a region and visualize: 
+coords <- GetTissueCoordinates(Naive, image = "slice1")
+
+cells_to_keep <- coords[
+  coords$x > 10000.08 & coords$x < 20006.94 &
+    coords$y > 15000.08 & coords$y < 35006.94,
+  "cell"
+]
+
+cropped_obj <- subset(Naive, cells = cells_to_keep)
+
+
+p1<-SpatialDimPlot(cropped_obj, pt.size.factor = 6, cols = my_colors, shape = 22)
+p1
+pdf("Naive_cropped_spatial_plot.pdf", height = 5, width = 5)
+print(p1)
+
+#Cropped object
+coords <- GetTissueCoordinates(PMN)
+
+#use this to get the coordinates
+ggplot(coords, aes(x = x, y = y)) +
+  geom_point(alpha = 0.5) +
+  scale_y_reverse() +  # Flip Y-axis to match image orientation
+  theme_minimal()
+
+
+# Find coordinates: 
+coords <- GetTissueCoordinates(PMN, image = "slice1.2")
+head(coords)
+
+# crop a region and visualize: 
+coords <- GetTissueCoordinates(PMN, image = "slice1.2")
+
+cells_to_keep <- coords[
+  coords$x > 30000.08 & coords$x < 40006.94 &
+    coords$y > 30000.08 & coords$y < 40006.94,
+  "cell"
+]
+
+PMN_cropped_obj <- subset(PMN, cells = cells_to_keep)
+
+
+p2<-SpatialDimPlot(PMN_cropped_obj, pt.size.factor = 7.5, cols = my_colors, shape = 22)
+pdf("PMN_cropped_spatial_plot.pdf", height = 5, width = 5)
+print(p2)
+
+
+
+# Find coordinates: 
+coords <- GetTissueCoordinates(MacroMet, image = "slice1.3")
+
+cells_to_keep <- coords[
+  coords$x > 22000.08 & coords$x < 36006.94 &
+    coords$y > 25000.08 & coords$y < 32006.94,
+  "cell"
+]
+
+Distal_cropped_obj <- subset(MacroMet, cells = cells_to_keep)
+
+p3<-SpatialDimPlot(Distal_cropped_obj, pt.size.factor = 8,  shape = 22, cols = my_colors)
+pdf("Distal_Tumor_cropped_spatial_plot.pdf", height = 5, width = 5)
+print(p3)
+
+cells_to_keep <- coords[
+  coords$x > 9000.08 & coords$x < 18006.94 &
+    coords$y > 9000.08 & coords$y < 18006.94,
+  "cell"
+]
+
+Proximal_cropped_obj <- subset(MacroMet, cells = cells_to_keep)
+
+p4<-SpatialDimPlot(Proximal_cropped_obj, pt.size.factor = 7, cols = my_colors, shape = 22)
+pdf("Proximal_Tumor_cropped_spatial_plot.pdf", height = 5, width = 5)
+print(p4)
+
+
+
+p5<-p1+p2+p3+p4
+
+pdf("Cropped_spatial_plot.pdf", height = 5, width = 20)
+print(p5)
+```
+
+#Figure 5: barcharts of OB and OC frequency
+```{r}
+#osteoclasts and osteoblasts barchart
+celltypes <- Naive@meta.data[["celltypes"]]
+
+df <- as.data.frame(table(celltypes))
+
+df_sub <- df %>%
+  filter(celltypes %in% c("Osteoblast", "Osteoclast"))
+
+df_sub <- df_sub %>%
+  mutate(percentage = Freq / sum(df$Freq) * 100)
+
+pdf("osteoblast_osteoclast_barchart_Naive.pdf", width = 3.5, height = 3)
+p1<-ggplot(df_sub, aes(x = celltypes, y = percentage, fill = celltypes)) +
+  geom_bar(stat = "identity", width = 0.6) +
+  geom_text(aes(label = sprintf("%.1f%%", percentage)), 
+            vjust = -0.5, size = 5) +  # add percentage labels
+  theme_minimal(base_size = 14) +
+  theme(panel.grid = element_blank()) +
+  ylab("Percentage of all cells") +
+  xlab("") +
+   scale_fill_manual(values = c("Osteoblast" = "#BCEE68",
+                               "Osteoclast" = "#006606")) +
+  theme(legend.position = "none", axis.text.x = element_text(angle = 45, hjust = 1)) +
+  ylim(0, 30)
+print(p1)
+```
+
+
+
+#Figure 5: heatmap of OB and OC genes
+```{r}
+# Define osteoclast marker genes
+osteoclast_genes <- c("Ctsk", "Acp5", "Dcstamp", 
+                      "Oscar", "Mmp9", "Atp6v0d2", "Itgb3")
+
+osteoclast_subset <- subset(merged_obj, idents = c("Osteoclast"))
+DefaultAssay(osteoclast_subset) <- "SCT"
+
+avg_exp <- AverageExpression(
+  osteoclast_subset, 
+  features = osteoclast_genes, 
+  group.by = "sample", 
+  assays = "SCT", 
+  slot = "data"
+)
+
+
+exp_matrix <- as.matrix(avg_exp$SCT)
+exp_matrix <- exp_matrix[osteoclast_genes, c("Naive", "PMN", "MacroMet")]
+min_pct <- 0.05   # 5% threshold
+keep_genes <- rowSums(exp_matrix > 0) / ncol(exp_matrix) >= min_pct
+exp_matrix_filt <- exp_matrix[keep_genes, ]
+
+p1<-pheatmap(
+  exp_matrix,
+  cluster_rows = F,
+  cluster_cols = F, 
+  scale = "row",  
+  color = colorRampPalette(c("navy", "white", "firebrick"))(100),
+  border_color = NA,
+  fontsize_row = 12,
+  fontsize_col = 12)
+p1
+
+pdf("osteoclast_genes_heatmap.pdf", width = 3.5, height = 5)
+print(p1)
+
+
+
+osteoblast_genes <- c("Alpl", "Col1a1", "Ibsp", "Spp1", "Bsp", "Runx2", "Sp7")
+osteoblast_subset <- subset(merged_obj, idents = "Osteoblast")
+DefaultAssay(osteoblast_subset) <- "SCT"
+
+avg_exp_osteoB <- AverageExpression(
+  osteoblast_subset,
+  features = osteoblast_genes,
+  group.by = "sample",   
+  assays = "SCT",
+  slot = "data"
+)
+
+exp_matrix_osteoB <- as.matrix(avg_exp_osteoB$SCT)
+exp_matrix_osteoB <- exp_matrix_osteoB[, c("Naive", "PMN", "MacroMet")]
+min_pct <- 0.05   # 5% threshold
+keep_genes <- rowSums(exp_matrix_osteoB > 0) / ncol(exp_matrix_osteoB) >= min_pct
+exp_matrix_osteoB_filt <- exp_matrix_osteoB[keep_genes, ]
+
+p2<-pheatmap(
+  exp_matrix_osteoB,
+  cluster_rows = F,
+  cluster_cols = F,  # keep sample order fixed
+  scale = "row",  # z-score genes across samples
+  color = colorRampPalette(c("navy", "white", "firebrick"))(100),
+  border_color = NA,
+  fontsize_row = 12,
+  fontsize_col = 12)
+p2
+
+pdf("osteoblast_genes_heatmap.pdf", width = 3.5, height = 5)
+print(p2)
+```
+
+#Figure 6:Subcluster B cells & Plasma cells
+```{r}
+Bcells<-subset(merged_obj, idents = c("Plasma cell", "B cell"))
+DefaultAssay(Bcells)<-"SCT"
+Bcells <- RunPCA(Bcells)
+ElbowPlot(Bcells, ndims = 50, reduction = "pca")
+
+Bcells <- FindNeighbors(Bcells, dims = 1:10)
+Bcells <- FindClusters(Bcells, resolution = 0.06)
+Bcells <- RunUMAP(Bcells, dims = 1:10)
+DimPlot(Bcells, label = T)
+Idents(Bcells)<-Bcells$seurat_clusters
+
+#GPTcelltype
+#define markers used in GPTcelltype
+markers<-FindAllMarkers(Bcells, group.by = "seurat_clusters")
+
+markers_top <- markers %>%
+  group_by(cluster) %>%
+  slice_max(avg_log2FC, n = 20) %>%
+  ungroup()
+
+marker_list <- split(markers_top$gene, markers_top$cluster)
+
+annotate_cluster <- function(cluster_name, gene_list) {
+  gene_text <- paste(gene_list, collapse = ", ")
+  
+   message <- paste0(
+         "You are a biomedical expert annotating single-cell clusters based on marker genes. ",
+         "This data is subsetted from mouse bone marrow and contains ONLY b cell subsets",
+         "Assign the most specific cell subtype possible (e.g. naive B cell, pre-b cell, plasma cell, pro-b cell, Igha plasma cell, exhausted plasma cell, etc) based on canonical markers. ",
+         "Here are the top marker genes for one cluster: ",
+         gene_text,
+         ". Give only the cell type name as output, no explanation."
+     )
+  
+  res <- create_chat_completion(
+    model = "gpt-4o",
+    messages = list(list(role = "user", content = message))
+  )
+  
+  # Extract cell type from the choices data.frame
+  celltype <- res$choices$message.content[1]
+  
+  data.frame(
+    cluster = cluster_name,
+    celltype = celltype,
+    stringsAsFactors = FALSE
+  )
+}
+
+annotations <- bind_rows(lapply(names(marker_list), function(cl) {
+  annotate_cluster(cl, marker_list[[cl]])
+}))
+
+annotations
+
+
+
+Idents(Bcells) <- factor(Idents(Bcells)) 
+
+Bcells$GPTnamed <- annotations$celltype[match(Idents(Bcells), annotations$cluster)]
+
+DimPlot(Bcells, group.by = "GPTnamed", label = T, raster = F, split.by = "sample")
+
+saveRDS(Bcells, "Bcells_subclustered_from_merged_obj_without_tumor.rds")
+
+Bcells<-readRDS("~/Desktop/HD visium experiment/RDS files/for pseudotime/Bcells_subclustered_from_merged_without_tumor.rds")
+```
+
+
+#Figure 6: umap & barchart
+```{r}
+Bcells<-readRDS("~/Desktop/HD visium experiment/RDS files/lastest/Bcells_subsetted_final.rds")
+Bcells = UpdateSeuratObject(Bcells)
+
+Idents(Bcells)<-Bcells$GPTnamed
+DimPlot(Bcells, split.by = "sample")
+Bcells<-subset(Bcells, idents = c("Pro-B cell", "Pre-B cell", "Plasma cell", "Igha plasma cell"))
+
+split<-SplitObject(Bcells, split.by = "sample")
+Bcells_MacroMet<-split$MacroMet
+Bcells_PMN<-split$PMN
+Bcells_Naive<-split$Naive
+
+
+my_colors <- c(
+  "Pre-B cell"       = "#7FFFD4",
+  "Pro-B cell"       = "#27C2F5",
+  "Plasma cell"      = "#008B8B",
+  "Igha plasma cell" = "#3C5488FF"
+)
+
+df <- data.frame(
+  celltype = as.character(Idents(Bcells)),    
+  sample = as.character(Bcells$sample)      
+)
+
+df <- df %>% filter(!is.na(celltype) & !is.na(sample))
+
+counts_df <- df %>%
+  group_by(sample, celltype) %>%
+  summarise(n = n(), .groups = "drop")
+
+prop_df <- counts_df %>%
+  group_by(sample) %>%
+  mutate(proportion = n / sum(n)) %>%
+  ungroup()
+sample_order <- c("Naive", "PMN", "MacroMet")
+counts_df$sample <- factor(counts_df$sample, levels = sample_order)
+prop_df$sample <- factor(prop_df$sample, levels = sample_order)
+
+p_prop <- ggplot(prop_df, aes(x = sample, y = proportion, fill = celltype)) +
+  geom_col(position = "fill") +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  labs(x = "Sample", y = "Proportion", fill = "Cell type") +
+  scale_fill_manual(values = my_colors) +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.x = element_blank()
+  )
+
+pdf("B_cell_subclustered.pdf", height = 7, width = 4)
+print(p_prop)
+
+
+p2<-DimPlot(Bcells, cols = my_colors)
+pdf("Bcell_UMAP.pdf", height = 5, width = 5)
+print(p2)
+
+p1<-DimPlot(Bcells, cols = my_colors)
+p2<-DimPlot(merged_obj, cols = my_colors1)
+p3<-p1+p2
+pdf("Bcell_subclustered_umap.pdf", height = 5, width = 12)
+print(p3)
+```
+#Figure 6: heatmap
+```{r}
+# Subset osteoblasts
+OB<-subset(merged_obj, idents = "Osteoblast")
+Idents(OB)<-OB$sample
+
+# Define PC support cytokines for OB heatmap
+genes <- c("Il6", "Tnfsf13", "Tnfsf13b", "Cxcl12", "Vcam", "Icam1")
+
+#make expression matrix
+celltype_order <- c("Naive", "PMN", "MacroMet")
+
+OB$celltype<-Idents(OB)
+
+avg_exp <- AggregateExpression(
+  OB, 
+  features = genes, 
+  group.by = "celltype", 
+  assays = "SCT", 
+  slot = "data"
+)
+
+exp_matrix <- as.matrix(avg_exp$SCT)
+
+# Reorder rows (genes)
+exp_matrix <- exp_matrix[genes[genes %in% rownames(exp_matrix)], , drop = FALSE]
+
+# Reorder columns (cell types)
+exp_matrix <- exp_matrix[, celltype_order[celltype_order %in% colnames(exp_matrix)], drop = FALSE]
+
+# Transpose to swap axes (genes on x, cell types on y)
+exp_matrix <- t(exp_matrix)
+
+# Plot heatmap
+p1 <- pheatmap(
+  exp_matrix,
+  cluster_rows = FALSE,
+  cluster_cols = FALSE, 
+  scale = "column",   # important: scale along genes now
+  color = colorRampPalette(c("blue", "white", "firebrick"))(100),
+  border_color = NA,
+  fontsize_row = 10,   # smaller y-axis (cell types)
+  fontsize_col = 10,   # smaller x-axis (genes)
+)
+p1
+
+pdf("OB_PC_survival_heatmap.pdf", height = 2, width = 5)
+print(p1)
+```
+
+#Figure 6: CellChat chord plots - cellchat code was performed on subsetted on naive, PMN, and metastatic samples seperately as in Figure 4: regional cellchat
+```{r}
+MacroMet<-readRDS("~/Desktop/HD visium experiment/RDS files/lastest/cellchat_MacroMet.rds")
+PMN<-readRDS("~/Desktop/HD visium experiment/RDS files/lastest/cellchat_PMN.rds")
+Naive<-readRDS("~/Desktop/HD visium experiment/RDS files/lastest/cellchat_naive.rds")
+
+pathways.CXCL <- c("CXCL") 
+
+cells.use <- c("B cell", "Plasma cell", "Osteoblast")
+signaling.use <- c("CXCL")
+netVisual_chord_cell(Naive, signaling = signaling.use, sources.use = cells.use,targets.use = cells.use)
+netVisual_chord_cell(PMN, signaling = signaling.use, sources.use = cells.use,targets.use = cells.use)
+netVisual_chord_cell(MacroMet, signaling = signaling.use, sources.use = cells.use,targets.use = cells.use)
+
+cell.cols <- c(
+  "Plasma cell" = "green4",
+  "B cell" = "blue3",
+  "Osteoblast" = "red3"
+)
+
+pdf("cellchat_Naive_CXCLsignaling.pdf", height = 5, width = 6)
+p1 <- netVisual_chord_cell(
+  Naive,
+  signaling = "CXCL",
+  sources.use = cells.use,
+  targets.use = cells.use,
+  thresh = 0.05,
+  remove.isolate = TRUE,
+  lab.cex = 0.8,
+  color.use = cell.cols
+)
+print(p1)
+
+pdf("cellchat_PMN_CXCLsignaling.pdf", height = 5, width = 6)
+p2<-netVisual_chord_cell(
+    PMN,
+    signaling = "CXCL",
+    sources.use = cells.use,
+    targets.use = cells.use,
+    thresh = 0.05,
+    remove.isolate = TRUE,
+    lab.cex = 0.8,
+    color.use = cell.cols
+
+)
+print(p2)
+```
+
+#Supp 2: Spatial nCount and nFeature plots
+```{r}
+p1<-SpatialFeaturePlot(merged_obj, features = "nCount_Spatial", pt.size.factor = 3, shape = 22)
+pdf("Number_of_Molecules.pdf", width = 15, height = 5)
+print(p1)
+
+
+p2<-SpatialFeaturePlot(merged_obj, features = "nFeature_Spatial", pt.size.factor = 3, shape = 22)
+pdf("Number_of_Genes.pdf", width = 15, height = 5)
+print(p2)
+
+
+Idents(merged_obj)<-merged_obj$orig.ident
+p1<-VlnPlot(merged_obj, features = "nFeature_Spatial", pt.size = 0)
+pdf("Genes per spot violin plot.pdf", height = 4, width = 3)
+print(p1)
+
+p2<-VlnPlot(merged_obj, features = "nCount_Spatial")
+pdf("UMIs per spot violin plot.pdf", height = 4, width = 3)
+print(p2)
+p1+p2
+```
+
+#Supp 3: UMAP, spatial plots, and heatmap of seurat clusters
+```{r}
+#UMAPs
+merged_obj$sample <- factor(
+  merged_obj$sample,
+  levels = c("Naive", "PMN", "MacroMet")
+)
+merged_obj$seurat_clusters <- factor(
+  merged_obj$seurat_clusters,
+  levels = as.character(sort(as.numeric(unique(merged_obj$seurat_clusters))))
+)
+p1<-DimPlot(
+  merged_obj,
+  group.by = "SCT_snn_res.0.8",
+  split.by = "sample",
+  pt.size = 2,
+  label = F,
+  raster = T,
+  shuffle = FALSE
+)
+pdf("seurat_UMAPs.pdf", height = 5, width = 10)
+print(p1)
+
+#Heatmap
+merged_subset <- subset(merged_obj, cells = Cells(merged_obj[["SCT"]]), downsample = 500)
+markers<-FindAllMarkers(merged_subset, group.by = "SCT_snn_res.0.8")
+
+markers %>%
+  group_by(cluster) %>%
+  dplyr::filter(avg_log2FC > 0.5) %>%
+  slice_head(n = 5) %>%
+  ungroup() -> top5
+
+Idents(merged_subset)<-merged_subset$SCT_snn_res.0.8
+merged_subset <- ScaleData(merged_subset, assay = "SCT", features = top5$gene)
+pdf("Naive_cluster_heatmap.pdf", height =10, width = 20)
+p <- DoHeatmap(merged_subset, assay = "SCT", features = top5$gene, size = 2.5) + theme(axis.text = element_text(size = 5.5)) + NoLegend()
+print(p)
+
+
+
+#Spatial Plots
+Idents(merged_obj)<-merged_obj$SCT_snn_res.0.8
+
+p1<-SpatialDimPlot(merged_obj, pt.size.factor = 2.5, shape = 22)
+pdf("Spatial_seurat_clusters.pdf", height = 5, width = 15)
+print(p1)
+
+```
+
+
+#Supp 4: cropped spatial plots and cell proportion barchart
+```{r}
+#using cropped images from figure 3
+#SUPP 3A
+tumor<-subset(MacroMet, idents = "Tumor")
+coords <- GetTissueCoordinates(tumor, image = "slice1.3")
+
+cells_to_keep <- coords[
+  coords$x > 9000.08 & coords$x < 18006.94 &
+    coords$y > 9000.08 & coords$y < 18006.94,
+  "cell"
+]
+
+tumor <- subset(tumor, cells = cells_to_keep)
+
+p1<-SpatialDimPlot(tumor, pt.size.factor = 7.5, shape = 22, cols = my_colors)
+
+p2<-SpatialDimPlot(tumor, pt.size.factor = 0, shape = 22, cols = my_colors)
+
+coords <- GetTissueCoordinates(MacroMet, image = "slice1.3")
+
+cells_to_keep <- coords[
+  coords$x > 9000.08 & coords$x < 18006.94 &
+    coords$y > 9000.08 & coords$y < 18006.94,
+  "cell"
+]
+
+tumor2 <- subset(MacroMet, cells = cells_to_keep)
+
+p3<-SpatialFeaturePlot(tumor2, features = c("Vim"), pt.size.factor = 7.5, shape = 22) + scale_fill_gradientn(colors = c("white", "orange", "red")) +
+  theme_minimal()
+
+
+p4<- p1 + p2 + p3
+p4
+
+pdf("tumor cropped.pdf", height = 5, width = 15)
+print(p4)
+
+
+
+#SUPP 3B
+muscle<-subset(PMN, idents = "Skeletal Muscle")
+coords <- GetTissueCoordinates(muscle, image = "slice1.2")
+
+cells_to_keep <- coords[
+  coords$x > 27000.08 & coords$x < 32006.94 &
+    coords$y > 35000.08 & coords$y < 40006.94,
+  "cell"
+]
+
+muscle <- subset(muscle, cells = cells_to_keep)
+
+p1<-SpatialDimPlot(muscle, pt.size.factor = 15, shape = 22, cols = my_colors)
+
+p2<-SpatialDimPlot(muscle, pt.size.factor = 0, shape = 22, cols = my_colors)
+
+coords <- GetTissueCoordinates(PMN, image = "slice1.2")
+
+cells_to_keep <- coords[
+  coords$x > 27000.08 & coords$x < 32006.94 &
+    coords$y > 35000.08 & coords$y < 40006.94,
+  "cell"
+]
+
+muscle2 <- subset(PMN, cells = cells_to_keep)
+
+p3<-SpatialFeaturePlot(muscle2, features = c("Myh4"), pt.size.factor = 15, shape = 22) + scale_fill_gradientn(colors = c("white", "orange", "red")) +
+  theme_minimal()
+
+
+p4<- p1 + p2 + p3
+p4
+
+pdf("muscle cropped.pdf", height = 5, width = 20)
+print(p4)
+
+
+
+#SUPP 3C
+bone<-subset(PMN, idents = c("Osteoclast"))
+coords <- GetTissueCoordinates(bone, image = "slice1.2")
+
+cells_to_keep <- coords[
+  coords$x > 37000.08 & coords$x < 40006.94 &
+    coords$y > 39000.08 & coords$y < 42006.94,
+  "cell"
+]
+
+bone <- subset(bone, cells = cells_to_keep)
+
+p1<-SpatialDimPlot(bone, pt.size.factor = 25, shape = 22, cols = my_colors)
+
+p2<-SpatialDimPlot(bone, pt.size.factor = 0, shape = 22, cols = my_colors)
+
+coords <- GetTissueCoordinates(PMN, image = "slice1.2")
+
+cells_to_keep <- coords[
+  coords$x > 37000.08 & coords$x < 40006.94 &
+    coords$y > 39000.08 & coords$y < 42006.94,
+  "cell"
+]
+bone2 <- subset(PMN, cells = cells_to_keep)
+
+p3<-SpatialFeaturePlot(bone2, features = c("Acp5"), pt.size.factor = 25, shape = 22) + scale_fill_gradientn(colors = c("white", "orange", "red")) +
+  theme_minimal()
+
+p4<- p1 + p2 + p3
+p4
+
+pdf("bone cropped.pdf", height = 5, width = 12)
+print(p4)
+
+
+
+
+
+#SUPP 3D
+mega<-subset(MacroMet, idents = "Megakaryocyte")
+coords <- GetTissueCoordinates(mega, image = "slice1.3")
+
+cells_to_keep <- coords[
+  coords$x > 20000.08 & coords$x < 23006.94 &
+    coords$y > 20000.08 & coords$y < 23006.94,
+  "cell"
+]
+
+MacroMet_cropped_obj <- subset(mega, cells = cells_to_keep)
+
+p1<-SpatialDimPlot(MacroMet_cropped_obj, pt.size.factor = 25, shape = 22, cols = my_colors)
+
+p2<-SpatialDimPlot(MacroMet_cropped_obj, pt.size.factor = 0, shape = 22, cols = my_colors)
+
+coords <- GetTissueCoordinates(MacroMet, image = "slice1.3")
+
+cells_to_keep <- coords[
+  coords$x > 20000.08 & coords$x < 23006.94 &
+    coords$y > 20000.08 & coords$y < 23006.94,
+  "cell"
+]
+
+MacroMet_cropped_obj2 <- subset(MacroMet, cells = cells_to_keep)
+
+
+p3<-SpatialFeaturePlot(MacroMet_cropped_obj2, features = "Pf4", pt.size.factor = 25, shape = 22) + scale_fill_gradientn(colors = c("white", "orange", "red")) +
+  theme_minimal()
+
+p4<- p1 + p2 + p3
+p4
+
+
+pdf("megakaryocyte cropped_with_marker.pdf", height = 5, width = 12)
+print(p4)
+
+
+
+#SUPP 3E
+#using prop_df from figure 2 stacked bar chart
+
+prop_df$sample <- factor(prop_df$sample, levels = c("Naive", "PMN", "MacroMet"))
+prop_df$celltype <- factor(prop_df$celltype, levels = unique(prop_df$celltype))  
+p_grouped <- ggplot(prop_df, aes(x = celltype, y = proportion, fill = sample)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.8)) +
+  scale_y_continuous(labels = scales::percent) +
+  scale_fill_manual(values = c("Naive" = "#1f77b4", "PMN" = "#ff7f0e", "MacroMet" = "#2ca02c")) + 
+  labs(
+    x = "Cell Type",
+    y = "Proportion of cells",
+    fill = "Sample"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.x = element_text(size = 12, angle = 45, hjust = 0.8),
+    axis.text.y = element_text(size = 12),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+```
+
+#Supp 5: Tumor subcluster heatmap & spatial plot
+```{r}
+Tumor<-MacroMet
+Tumor_subset <-subset(Tumor, idents = c("Proximal Tumor 1", "Proximal Tumor 2", "Distal Tumor", "Other Tumor"))
+
+markers <- FindAllMarkers(Tumor, assay = "SCT", only.pos = TRUE)
+markers %>%
+  group_by(cluster) %>%
+  dplyr::filter(avg_log2FC > 0.5) %>%
+  slice_head(n = 15) %>%
+  ungroup() -> top5
+
+avg_exp <- AggregateExpression(
+  Tumor, 
+  features = top5$gene, 
+  assays = "SCT", 
+  slot = "data"
+)
+
+exp_matrix <- as.matrix(avg_exp$SCT)
+
+p1<-pheatmap(
+  exp_matrix,
+  cluster_rows = FALSE,
+  cluster_cols = FALSE, 
+  scale = "row",   
+  color = colorRampPalette(c("grey", "white", "orange"))(100),
+  border_color = NA,
+  fontsize_row = 10,   
+  fontsize_col = 10,   
+)
+pdf("Heatmap_subclustered_tumor_top10Genes_SCT.pdf", height = 8, width = 4)
+print(p1)
+
+
+
+p1<-SpatialDimPlot(Tumor, cols = cols, pt.size.factor = 8, shape =22)
+pdf("Tumor only spatial plot.pdf", height = 8, width = 8)
+print(p1)
+```
+
+#Supp 6: T cell marker crop spatial plots
+```{r}
+# Find coordinates: 
+coords <- GetTissueCoordinates(MacroMet, image = "slice1.3")
+
+cells_to_keep <- coords[
+  coords$x > 24000.08 & coords$x < 28006.94 &
+    coords$y > 24000.08 & coords$y < 28006.94,
+  "cell"
+]
+
+Distal_cropped_obj <- subset(MacroMet, cells = cells_to_keep)
+
+
+DefaultAssay(Distal_cropped_obj)<-"SCT"
+
+
+p1<-SpatialFeaturePlot(Distal_cropped_obj, features = "Cd3d", pt.size.factor = 16, shape = 22) + scale_fill_gradientn(colors = c("white", "orange", "red"))
+
+p2<-SpatialFeaturePlot(Distal_cropped_obj, features = "Cd8a", pt.size.factor = 16, shape = 22) + scale_fill_gradientn(colors = c("white", "orange", "red")) 
+
+p3<-SpatialFeaturePlot(Distal_cropped_obj, features = "Cd4", pt.size.factor = 16, shape = 22) + scale_fill_gradientn(colors = c("white", "orange", "red")) 
+
+pdf("Tcell_spatial_cropped_plots.pdf", width = 12, height = 5)
+p4<-p1 + p2 + p3
+print(p4)
+
+```
+#Supp 7: B/plasma cell umaps & heatmap
+```{r}
+Bcells<-readRDS("~/Desktop/HD visium experiment/RDS files/lastest/Bcells_subsetted_final.rds")
+
+my_colors <- c(
+  "Pre-B cell"       = "#7FFFD4",
+  "Pro-B cell"       = "#27C2F5",
+  "Plasma cell"      = "#008B8B",
+  "Igha plasma cell" = "#3C5488FF",
+  "Cxcl12+ stromal cell" = "grey"
+)
+Idents(Bcells)<-Bcells$GPTnamed
+Bcells$sample <- factor(
+  Bcells$sample,
+  levels = c("Naive", "PMN", "MacroMet")
+)
+p1<-DimPlot(Bcells, split.by = "sample", cols= my_colors)
+pdf("Bcell subclustered umaps.pdf", height = 5, width = 10)
+print(p1)
+
+
+merged_subset <- subset(Bcells, cells = Cells(Bcells[["SCT"]]), downsample = 500)
+markers<-FindAllMarkers(merged_subset, group.by = "GPTnamed")
+
+markers %>%
+  group_by(cluster) %>%
+  dplyr::filter(avg_log2FC > 0.5) %>%
+  slice_head(n = 10) %>%
+  ungroup() -> top10
+
+avg_exp <- AverageExpression(
+  merged_subset, 
+  features = top10$gene, 
+  group.by = "GPTnamed",
+  assays = "SCT", 
+  slot = "data"
+)
+
+cell_order <- c(
+  "Pro-B cell",
+  "Pre-B cell",
+  "Plasma cell",
+  "Igha plasma cell"
+)
+
+
+exp_matrix <- as.matrix(avg_exp$SCT)
+exp_matrix <- exp_matrix[, cell_order, drop = FALSE]
+
+
+p1<-pheatmap(
+  exp_matrix,
+  cluster_rows = FALSE,
+  cluster_cols = FALSE, 
+  scale = "row",   
+  color = colorRampPalette(c("grey", "white", "darkcyan"))(100),
+  border_color = NA,
+  fontsize_row = 10,  
+  fontsize_col = 10,   
+)
+p1
+pdf("B cell and plasma cell subclustering heatmap.pdf", height = 7, width = 5)
+print(p1)
+```
+
