@@ -141,10 +141,10 @@ merged_obj <- SCTransform(merged_obj, assay = "Spatial", verbose = FALSE)
 merged_obj <- RunPCA(merged_obj)
 ElbowPlot(merged_obj, ndims = 50, reduction = "pca")
 
-merged_obj <- FindNeighbors(merged_obj, dims = 1:20)
+merged_obj <- FindNeighbors(merged_obj, dims = 1:16)
 merged_obj <- FindClusters(merged_obj, resolution = c(0.1, 0.2, 0.4, 0.8, 1.2))
 sapply(c(0.1, 0.2, 0.4, 0.8, 1.2), function(x) length(unique(merged_obj@meta.data[[paste0("SCT_snn_res.", x)]])))
-merged_obj <- RunUMAP(merged_obj, dims = 1:20)
+merged_obj <- RunUMAP(merged_obj, dims = 1:16)
 
 
 #GPT celltype
